@@ -47,69 +47,76 @@ function shouldKeepOpportunity(text: string): boolean {
   return hasKeepKeyword && !hasExclusion;
 }
 
+function buildOpportunityFromBlock(block: string): Opportunity | null {
+  const title = normalizeText(xmlValue(block, 'OpportunityTitle'));
+  const agency = normalizeText(xmlValue(block, 'AgencyName')) || 'Federal Agency';
+  const opportunityId = normalizeText(xmlValue(block, 'OpportunityID')) || crypto.randomUUID();
+  const description = normalizeText(xmlValue(block, 'Description'));
+  const closeDate = normalizeText(xmlValue(block, 'CloseDate'));
+  const postDate = normalizeText(xmlValue(block, 'PostDate'));
+  const lastUpdatedDate = normalizeText(xmlValue(block, 'LastUpdatedDate'));
+  const awardCeilingRaw = Number(xmlValue(block, 'AwardCeiling') ?? '');
+  const awardFloorRaw = Number(xmlValue(block, 'AwardFloor') ?? '');
+  const fundingActivity = normalizeText(xmlValue(block, 'CategoryOfFundingActivity'));
+  const opportunityNumber = normalizeText(xmlValue(block, 'FundingOpportunityNumber'));
+  const url = opportunityId
+    ? `https://www.grants.gov/search-results-detail/${opportunityId}`
+    : 'https://www.grants.gov/';
+
+  const fullText = [title, agency, description, fundingActivity].join(' ');
+  if (!shouldKeepOpportunity(fullText)) return null;
+
+  const status: Opportunity['status'] =
+    closeDate && new Date(closeDate).getTime() < Date.now() ? 'Closed' : 'Open';
+
+  const lower = fullText.toLowerCase();
+  const projectTags = [
+    lower.includes('lighting') ? 'led lighting' : '',
+    lower.includes('street') ? 'street lighting' : '',
+    lower.includes('facility') || lower.includes('building') ? 'facility lighting' : '',
+    lower.includes('retrofit') ? 'energy retrofit' : '',
+    lower.includes('esco') ? 'esco' : '',
+    lower.includes('infrastructure') ? 'infrastructure' : '',
+    lower.includes('community') ? 'public sector' : ''
+  ].filter((tag): tag is string => Boolean(tag));
+
+  const awardFloor = Number.isFinite(awardFloorRaw) ? awardFloorRaw : undefined;
+  const awardCeiling = Number.isFinite(awardCeilingRaw) ? awardCeilingRaw : undefined;
+
+  return {
+    id: `grants-${opportunityId}`,
+    title,
+    agency,
+    programName: opportunityNumber || undefined,
+    source: 'grants_gov_xml',
+    sourceUrl: url,
+    description: description || fundingActivity || title,
+    status,
+    postedDate: postDate || undefined,
+    updatedDate: lastUpdatedDate || undefined,
+    dueDate: closeDate || undefined,
+    geography: 'Federal',
+    awardFloor,
+    awardCeiling,
+    fundingMin: awardFloor,
+    fundingMax: awardCeiling,
+    matchRequired: undefined,
+    eligibilityTags: ['federal applicants'],
+    projectTags: projectTags.length ? projectTags : ['energy retrofit'],
+    buyerTypeTags: ['federal', 'state partner', 'community'],
+    naicsTags: ['541330', '561210'],
+    notes: fundingActivity || undefined
+  };
+}
+
 function parseGrantsXml(xml: string): Opportunity[] {
   const synopsisBlocks = xml.match(/<OpportunitySynopsisDetail_1_0>[\s\S]*?<\/OpportunitySynopsisDetail_1_0>/g) ?? [];
 
-  return synopsisBlocks
-    .map((block) => {
-      const title = normalizeText(xmlValue(block, 'OpportunityTitle'));
-      const agency = normalizeText(xmlValue(block, 'AgencyName')) || 'Federal Agency';
-      const opportunityId = normalizeText(xmlValue(block, 'OpportunityID')) || crypto.randomUUID();
-      const description = normalizeText(xmlValue(block, 'Description'));
-      const closeDate = normalizeText(xmlValue(block, 'CloseDate'));
-      const postDate = normalizeText(xmlValue(block, 'PostDate'));
-      const lastUpdatedDate = normalizeText(xmlValue(block, 'LastUpdatedDate'));
-      const awardCeiling = Number(xmlValue(block, 'AwardCeiling') ?? '');
-      const awardFloor = Number(xmlValue(block, 'AwardFloor') ?? '');
-      const fundingActivity = normalizeText(xmlValue(block, 'CategoryOfFundingActivity'));
-      const opportunityNumber = normalizeText(xmlValue(block, 'FundingOpportunityNumber'));
-      const url = opportunityNumber
-        ? `https://www.grants.gov/search-results-detail/${opportunityId}`
-        : 'https://www.grants.gov/';
-
-      const fullText = [title, agency, description, fundingActivity].join(' ');
-      if (!shouldKeepOpportunity(fullText)) return null;
-
-      const status: Opportunity['status'] =
-        closeDate && new Date(closeDate).getTime() < Date.now() ? 'Closed' : 'Open';
-
-      const lower = fullText.toLowerCase();
-      const projectTags = [
-        lower.includes('lighting') ? 'led lighting' : '',
-        lower.includes('street') ? 'street lighting' : '',
-        lower.includes('facility') || lower.includes('building') ? 'facility lighting' : '',
-        lower.includes('retrofit') ? 'energy retrofit' : '',
-        lower.includes('esco') ? 'esco' : '',
-        lower.includes('infrastructure') ? 'infrastructure' : '',
-        lower.includes('community') ? 'public sector' : ''
-      ].filter(Boolean);
-
-      return {
-        id: `grants-${opportunityId}`,
-        title,
-        agency,
-        programName: opportunityNumber,
-        source: 'grants_gov_xml' as const,
-        sourceUrl: url,
-        description: description || fundingActivity || title,
-        status,
-        postedDate: postDate || undefined,
-        updatedDate: lastUpdatedDate || undefined,
-        dueDate: closeDate || undefined,
-        geography: 'Federal' as const,
-        awardFloor: Number.isFinite(awardFloor) ? awardFloor : undefined,
-        awardCeiling: Number.isFinite(awardCeiling) ? awardCeiling : undefined,
-        fundingMin: Number.isFinite(awardFloor) ? awardFloor : undefined,
-        fundingMax: Number.isFinite(awardCeiling) ? awardCeiling : undefined,
-        matchRequired: undefined,
-        eligibilityTags: ['federal applicants'],
-        projectTags: projectTags.length ? projectTags : ['energy retrofit'],
-        buyerTypeTags: ['federal', 'state partner', 'community'],
-        naicsTags: ['541330', '561210'],
-        notes: fundingActivity || undefined
-      } satisfies Opportunity;
-    })
-    .filter((item): item is Opportunity => Boolean(item));
+  return synopsisBlocks.reduce<Opportunity[]>((accumulator, block) => {
+    const opportunity = buildOpportunityFromBlock(block);
+    if (opportunity) accumulator.push(opportunity);
+    return accumulator;
+  }, []);
 }
 
 async function unzipFirstXml(zipBuffer: ArrayBuffer): Promise<string> {
@@ -120,8 +127,6 @@ async function unzipFirstXml(zipBuffer: ArrayBuffer): Promise<string> {
     throw new Error('ZIP signature not found in Grants.gov extract.');
   }
 
-  // Lightweight unzip via native DecompressionStream is not available in Node here.
-  // Vercel Node runtime includes zlib, but ZIP is not gzip. We parse the first local file header.
   const compressionMethod = bytes.readUInt16LE(start + 8);
   const compressedSize = bytes.readUInt32LE(start + 18);
   const fileNameLength = bytes.readUInt16LE(start + 26);
